@@ -1,0 +1,33 @@
+{
+  "name": "smoobu-availability-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "tsx watch src/local.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "check-catalog": "tsx src/scripts/check-catalog.ts",
+    "start": "node dist/src/local.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "~5.9.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0",
+    "@eslint/js": "^9.0.0"
+  },
+  "license": "GPL-3.0-only",
+  "description": "Public, read-only MCP server for prices and availability of vacation rentals in Puerto Viejo, Costa Rica (Smoobu-backed)."
+}
