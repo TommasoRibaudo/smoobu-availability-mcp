@@ -31,24 +31,96 @@ export interface PublicProperty {
 }
 
 /** Set to false once the entries below describe real properties. */
-export const CATALOG_IS_PLACEHOLDER = true;
+export const CATALOG_IS_PLACEHOLDER = false;
 
+/**
+ * Not yet known: fill in from Smoobu before merging. validateCatalog rejects
+ * it, so tests and check-catalog fail until every TODO is replaced.
+ */
+const TODO = -1;
+
+// Units from the 'luciano' Smoobu login only. The 4 La Perla units live under
+// a second login, and the server holds one API key, so they are not listed here.
 export const CATALOG: readonly CatalogProperty[] = [
   {
-    slug: 'casa-caribe',
-    name: 'Casa Caribe (placeholder)',
-    bedrooms: 3,
-    maxGuests: 6,
+    slug: 'kalawala-tucano',
+    name: 'Kalawala Tucano, Puerto Viejo',
+    bedrooms: TODO,
+    maxGuests: TODO,
     currency: 'USD',
-    smoobuApartmentId: 471101,
+    smoobuApartmentId: 301055,
   },
   {
-    slug: 'jungle-studio',
-    name: 'Jungle Studio (placeholder)',
-    bedrooms: 1,
-    maxGuests: 2,
+    slug: 'kalawala-pappagallo',
+    name: 'Kalawala Pappagallo, Puerto Viejo',
+    bedrooms: TODO,
+    maxGuests: TODO,
     currency: 'USD',
-    smoobuApartmentId: 471102,
+    smoobuApartmentId: 301058,
+  },
+  {
+    slug: 'kalawala-geco',
+    name: 'Kalawala Geco, Puerto Viejo',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 301061,
+  },
+  {
+    slug: 'kalawala-rana',
+    name: 'Kalawala Rana, Puerto Viejo',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 301064,
+  },
+  {
+    slug: 'namaitami-areka',
+    name: 'Namaitami Areka, Playa Chiquita',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 1516846,
+  },
+  {
+    slug: 'namaitami-plumeria',
+    name: 'Namaitami Plumeria, Playa Chiquita',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 1516849,
+  },
+  {
+    slug: 'namaitami-giulia',
+    name: 'Namaitami Giulia, Playa Chiquita',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 1597723,
+  },
+  {
+    slug: 'villa-coral',
+    name: 'Villa Coral, Playa Chiquita',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 1819085,
+  },
+  {
+    slug: 'villa-mar',
+    name: 'Villa Mar, Playa Chiquita',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 1829402,
+  },
+  {
+    slug: 'casa-delfines',
+    name: 'Casa Delfines',
+    bedrooms: TODO,
+    maxGuests: TODO,
+    currency: 'USD',
+    smoobuApartmentId: 2946826,
   },
 ];
 
