@@ -8,6 +8,8 @@ export interface AppConfig {
   readonly bookingUrlTemplate: string;
   readonly rateLimitPerMinute: number;
   readonly rateLimitBurst: number;
+  readonly upstreamRateLimitPerMinute: number;
+  readonly upstreamRateLimitBurst: number;
   readonly cacheTtlRatesMs: number;
   readonly cacheTtlAvailabilityMs: number;
 }
@@ -25,6 +27,20 @@ function optionalInt(env: NodeJS.ProcessEnv, name: string, fallback: number): nu
   return Number(v);
 }
 
+/** SMOOBU_BASE_URL must be a bare https origin: credentials are sent to it. */
+function validateBaseUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('SMOOBU_BASE_URL must be an absolute https URL');
+  }
+  if (url.protocol !== 'https:') throw new Error('SMOOBU_BASE_URL must use https');
+  if ((url.pathname !== '/' && url.pathname !== '') || url.search !== '' || url.hash !== '' || url.username !== '' || url.password !== '') {
+    throw new Error('SMOOBU_BASE_URL must be an origin only (no path, query, fragment or credentials)');
+  }
+}
+
 /** Reads and validates configuration. Error messages name variables, never values. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const customerIdRaw = required(env, 'SMOOBU_CUSTOMER_ID');
@@ -32,15 +48,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const bookingUrlTemplate = required(env, 'BOOKING_URL_TEMPLATE');
   validateBookingUrlTemplate(bookingUrlTemplate);
   const secret = env['SMOOBU_API_SECRET']?.trim();
+  const baseUrl = env['SMOOBU_BASE_URL']?.trim() || undefined;
+  if (baseUrl !== undefined) validateBaseUrl(baseUrl);
 
   return {
     smoobuApiKey: required(env, 'SMOOBU_API_KEY'),
     smoobuApiSecret: secret !== undefined && secret.length > 0 ? secret : undefined,
     smoobuCustomerId: Number(customerIdRaw),
-    smoobuBaseUrl: env['SMOOBU_BASE_URL']?.trim() || undefined,
+    smoobuBaseUrl: baseUrl,
     bookingUrlTemplate,
     rateLimitPerMinute: optionalInt(env, 'RATE_LIMIT_PER_MINUTE', 60),
     rateLimitBurst: optionalInt(env, 'RATE_LIMIT_BURST', 20),
+    upstreamRateLimitPerMinute: optionalInt(env, 'UPSTREAM_RATE_LIMIT_PER_MINUTE', 300),
+    upstreamRateLimitBurst: optionalInt(env, 'UPSTREAM_RATE_LIMIT_BURST', 50),
     cacheTtlRatesMs: optionalInt(env, 'CACHE_TTL_RATES_SECONDS', 300) * 1000,
     cacheTtlAvailabilityMs: optionalInt(env, 'CACHE_TTL_AVAILABILITY_SECONDS', 120) * 1000,
   };

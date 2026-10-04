@@ -39,11 +39,26 @@ function json(status: number, body: unknown, extra: Record<string, string> = {})
 }
 
 export function clientIpFrom(request: Request, ctx?: RequestContext): string {
-  if (ctx?.clientIp !== undefined && ctx.clientIp.length > 0) return ctx.clientIp;
+  if (ctx?.clientIp !== undefined && ctx.clientIp.length > 0) return rateLimitKey(ctx.clientIp);
   const forwarded = request.headers.get('x-vercel-forwarded-for') ?? request.headers.get('x-forwarded-for');
   const first = forwarded?.split(',')[0]?.trim();
-  if (first !== undefined && first.length > 0) return first;
-  return request.headers.get('x-real-ip')?.trim() || 'unknown';
+  if (first !== undefined && first.length > 0) return rateLimitKey(first);
+  return rateLimitKey(request.headers.get('x-real-ip')?.trim() || 'unknown');
+}
+
+/**
+ * IPv6 clients usually own a whole /64, so rotating addresses inside it must
+ * not reset the bucket: the key is the first four hextets. IPv4 is used as is.
+ */
+export function rateLimitKey(ip: string): string {
+  const bare = ip.replace(/^::ffff:/i, '');
+  if (!bare.includes(':')) return bare;
+  const [head = '', tail = ''] = bare.split('::', 2);
+  const headParts = head.length > 0 ? head.split(':') : [];
+  const tailParts = tail.length > 0 ? tail.split(':') : [];
+  const missing = Math.max(0, 8 - headParts.length - tailParts.length);
+  const full = [...headParts, ...Array<string>(missing).fill('0'), ...tailParts].slice(0, 8);
+  return `${full.slice(0, 4).map((h) => h.toLowerCase().padStart(4, '0')).join(':')}::/64`;
 }
 
 /**
@@ -75,6 +90,10 @@ export function createMcpHandler(opts: McpHandlerOptions): FetchHandler {
       });
     }
 
+    if (request.method !== 'POST' && request.method !== 'DELETE') {
+      return json(405, { jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }, { Allow: 'GET, POST, DELETE, OPTIONS' });
+    }
+
     const decision = await opts.rateLimiter.consume(clientIpFrom(request, ctx));
     if (!decision.allowed) {
       const retryAfter = String(decision.retryAfterSeconds ?? 1);
@@ -86,6 +105,29 @@ export function createMcpHandler(opts: McpHandlerOptions): FetchHandler {
       );
     }
 
+    // Read and parse the body here so that (a) the size cap is ours and (b) a
+    // JSON-RPC batch cannot turn one rate-limit token into up to 100 tool calls.
+    let parsedBody: unknown;
+    if (request.method === 'POST') {
+      const declared = Number(request.headers.get('content-length') ?? '0');
+      if (Number.isFinite(declared) && declared > maxBody) return json(413, { jsonrpc: '2.0', error: { code: -32000, message: 'Request body too large.' }, id: null });
+      let text: string;
+      try {
+        text = await request.text();
+      } catch {
+        return json(400, { jsonrpc: '2.0', error: { code: -32700, message: 'Could not read request body.' }, id: null });
+      }
+      if (text.length > maxBody) return json(413, { jsonrpc: '2.0', error: { code: -32000, message: 'Request body too large.' }, id: null });
+      try {
+        parsedBody = JSON.parse(text);
+      } catch {
+        return json(400, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error: body is not valid JSON.' }, id: null });
+      }
+      if (Array.isArray(parsedBody)) {
+        return json(400, { jsonrpc: '2.0', error: { code: -32600, message: 'JSON-RPC batches are not accepted; send one message per request.' }, id: null });
+      }
+    }
+
     const server = createMcpServer(opts.deps);
     // No sessionIdGenerator => stateless mode (no Mcp-Session-Id, no server-side state).
     const transport = new WebStandardStreamableHTTPServerTransport({
@@ -94,7 +136,7 @@ export function createMcpHandler(opts: McpHandlerOptions): FetchHandler {
     });
     try {
       await server.connect(transport);
-      const response = await transport.handleRequest(request);
+      const response = await transport.handleRequest(request, parsedBody === undefined ? {} : { parsedBody });
       return withCors(response);
     } catch {
       opts.log('http.error', { status: 500 });

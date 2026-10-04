@@ -45,10 +45,26 @@ describe('loadConfig', () => {
       bookingUrlTemplate: TEMPLATE,
       rateLimitPerMinute: 30,
       rateLimitBurst: 5,
+      upstreamRateLimitPerMinute: 300,
+      upstreamRateLimitBurst: 50,
       cacheTtlRatesMs: 10_000,
       cacheTtlAvailabilityMs: 20_000,
     });
     expect(typeof cfg.smoobuCustomerId).toBe('number');
+  });
+
+  it.each([
+    ['http://smoobu.example.test', /https/],
+    ['https://smoobu.example.test/api/reservations#', /origin only/],
+    ['https://smoobu.example.test/?x=1', /origin only/],
+    ['https://user:pw@smoobu.example.test', /origin only/],
+    ['not a url', /absolute https/],
+  ])('rejects SMOOBU_BASE_URL %s', (value, message) => {
+    expect(() => loadConfig(env({ SMOOBU_BASE_URL: value }))).toThrow(message);
+  });
+
+  it('accepts SMOOBU_BASE_URL with a trailing slash', () => {
+    expect(loadConfig(env({ SMOOBU_BASE_URL: 'https://smoobu.example.test/' })).smoobuBaseUrl).toBe('https://smoobu.example.test/');
   });
 
   it('applies defaults for optional values', () => {

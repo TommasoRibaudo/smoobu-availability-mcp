@@ -69,7 +69,7 @@ The Smoobu API key is account-wide. It can read reservations, guests and payment
 ### Logging
 
 - `src/log.ts` is the only logger. Its field type allows numbers and booleans only, so a log line can carry a status code or an attempt number but never a string.
-- ESLint `no-console` is an error in `src/`, with exceptions only for `src/log.ts`, the local entry point `src/local.ts` and the operator script `src/scripts/`.
+- ESLint `no-console` is an error in `src/`, with exceptions only for `src/log.ts`, the local entry point `src/local.ts`, the operator script `src/scripts/` and `api/mcp.ts`, which logs the name of a missing environment variable at startup.
 - Response bodies, URLs and API keys are never logged.
 - Upstream error messages (`SmoobuUpstreamError` in `src/errors.ts`) carry only the HTTP status and attempt count, never the body.
 - Configuration errors name the missing variable, never its value.
@@ -90,9 +90,10 @@ The mock Smoobu in `test/mockSmoobu.ts` plants guest-like data from `test/fixtur
 | Measure | Details | Code |
 | --- | --- | --- |
 | Input validation | Friendly error text, `isError: true`, no stack traces | `src/validation.ts`, `src/tools/shared.ts` |
-| Rate limit | Per-IP token bucket, in memory, per instance. Returns HTTP 429 with `Retry-After` and a JSON-RPC error body | `src/rateLimit.ts`, `src/http.ts` |
+| Rate limit | Per-client token bucket (IPv4 address or IPv6 /64), in memory, per instance. Returns HTTP 429 with `Retry-After` and a JSON-RPC error body. JSON-RPC batches are rejected with 400 so one request is always one message | `src/rateLimit.ts`, `src/http.ts` |
+| Upstream budget | A second token bucket in front of every Smoobu call (default 50 burst, 300 per minute, per instance) so no mix of callers can exhaust the account-wide Smoobu quota. After a Smoobu 429 with `Retry-After`, calls are refused for that long (up to 60 s) instead of retried | `src/smoobu/client.ts`, `src/app.ts` |
 | Caching | Rates for 300 s, availability for 120 s, in memory, per instance. Concurrent identical requests share one upstream call (single flight) | `src/cache.ts` |
-| Retry | Exponential backoff on 429, 5xx, network errors and timeouts. Honours `Retry-After` and `X-RateLimit-Retry-After` | `src/smoobu/client.ts` |
+| Retry | Exponential backoff on 429, 5xx, network errors and timeouts. Honours `Retry-After` and `X-RateLimit-Retry-After`; a requested pause longer than 4 s fails the call instead of holding it open | `src/smoobu/client.ts` |
 | Body limit | 64 KB per request | `src/http.ts` |
 | CORS | Open (`Access-Control-Allow-Origin: *`). This is a public service | `src/http.ts` |
 
@@ -116,10 +117,12 @@ Fill in `.env`:
 | `PORT` | no | Local server port. Default `3000`. |
 | `RATE_LIMIT_PER_MINUTE` | no | Per-IP sustained rate. Default `60`. |
 | `RATE_LIMIT_BURST` | no | Per-IP bucket size. Default `20`. |
+| `UPSTREAM_RATE_LIMIT_PER_MINUTE` | no | Budget for outgoing Smoobu calls, all callers together. Default `300` (Smoobu allows 700). |
+| `UPSTREAM_RATE_LIMIT_BURST` | no | Bucket size for that budget. Default `50`. |
 | `CACHE_TTL_RATES_SECONDS` | no | Calendar cache lifetime. Default `300`. `0` disables it. |
 | `CACHE_TTL_AVAILABILITY_SECONDS` | no | Availability cache lifetime. Default `120`. `0` disables it. |
 
-`src/config.ts` also reads `SMOOBU_BASE_URL`, which overrides `https://login.smoobu.com`. It exists for testing. Leave it unset in production.
+`src/config.ts` also reads `SMOOBU_BASE_URL`, which overrides `https://login.smoobu.com`. It exists for testing, must be a bare https origin, and should be left unset in production.
 
 Start the dev server:
 
@@ -209,7 +212,9 @@ The exact key names vary by client. No authentication is required, by design: th
 
 The project deploys as a Vercel Function on the Node.js runtime.
 
-- `vercel.json` rewrites `/mcp` to `/api/mcp` and sets `Cache-Control: no-store`.
+- `vercel.json` rewrites `/mcp` to `/api/mcp` and allows the function 60 s (worst case with retries is about 40 s).
+- `.vercelignore` uploads only `api/`, `src/`, `public/` and the package files. In particular it keeps a local `.env` out of the deployment: Vercel's built-in ignore list covers `.env.local` but not `.env`.
+- `public/robots.txt` disallows crawling and makes `public/` the static root, so project files are never served as static assets.
 - `api/mcp.ts` exports Web-standard `GET`, `POST`, `DELETE` and `OPTIONS` handlers. They share the same handler as the local server (`src/http.ts`).
 - If configuration is missing, the function answers 503 `{"error":"Server is not configured"}` and logs the name of the missing variable.
 
@@ -251,7 +256,7 @@ curl -s https://<project>.vercel.app/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-The first returns the JSON description. The second returns the four tools.
+The first returns the JSON description. The second returns the four tools. Also check that `https://<project>.vercel.app/.env` and `/package.json` return 404.
 
 The cache and the rate limiter live in memory, so each function instance has its own. That is fine for a small public read-only service, but it is not a global quota. If you need one, implement the `Cache` interface (`src/cache.ts`) and the `RateLimiter` interface (`src/rateLimit.ts`) on a shared store such as Upstash Redis, or use Vercel WAF rate limiting in front of the function.
 
@@ -263,8 +268,9 @@ The cache and the rate limiter live in memory, so each function instance has its
 4. Run `npm test`, `npm run lint` and `npm run typecheck`.
 5. Set the environment variables in Vercel (see [Deploy to Vercel](#deploy-to-vercel)).
 6. Deploy with `vercel --prod`.
-7. Open MCP Inspector, connect with Streamable HTTP to `https://<project>.vercel.app/mcp`, list the tools and call each one. Check that `check_availability` returns real prices for dates you know are open, and a reason for dates you know are booked.
-8. If calendar changes must show up faster, lower `CACHE_TTL_RATES_SECONDS` and `CACHE_TTL_AVAILABILITY_SECONDS`.
+7. Deploy a preview first (`vercel` without `--prod`) and confirm `check_availability` works with `SMOOBU_API_SECRET` set. The Smoobu docs show only the legacy header for `/booking/checkApartmentAvailability`; if HMAC is rejected there, leave the secret empty for now and raise it with Smoobu before the 2026-10-31 sunset.
+8. Open MCP Inspector, connect with Streamable HTTP to `https://<project>.vercel.app/mcp`, list the tools and call each one. Check that `check_availability` returns real prices for dates you know are open, and a reason for dates you know are booked.
+9. If calendar changes must show up faster, lower `CACHE_TTL_RATES_SECONDS` and `CACHE_TTL_AVAILABILITY_SECONDS`.
 
 ## Project layout
 
@@ -279,7 +285,7 @@ The cache and the rate limiter live in memory, so each function instance has its
 │   ├── catalog.ts              Hand-written public catalog (placeholder)
 │   ├── config.ts               Environment variable parsing
 │   ├── errors.ts               User-facing and upstream error types
-│   ├── http.ts                 Stateless Streamable HTTP handler, CORS, rate limit, GET description
+│   ├── http.ts                 Stateless Streamable HTTP handler, CORS, rate limit, batch rejection
 │   ├── local.ts                Local entry point for npm run dev
 │   ├── log.ts                  Structured logger (numbers and booleans only)
 │   ├── nodeServer.ts           Node http to Web Request/Response adapter, /healthz
@@ -308,7 +314,10 @@ The cache and the rate limiter live in memory, so each function instance has its
 │   ├── allowlist.test.ts       Non-allowlisted calls are refused before fetch
 │   ├── privacy.test.ts         No fixture data in any tool output
 │   └── *.test.ts               Unit tests: auth, booking, cache, catalog, client, config, http, rateLimit, tools, validation
+│   ├── deploy.test.ts          .vercelignore, vercel.json and .env.example guards
+├── public/robots.txt           Static root; disallows crawlers
 ├── .env.example
+├── .vercelignore
 ├── vercel.json
 ├── DECISIONS.md                Defaults chosen and why
 └── LICENSE

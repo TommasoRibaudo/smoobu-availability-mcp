@@ -23,7 +23,7 @@ export function todayInCostaRica(now: Date): string {
 /** Strict YYYY-MM-DD parse; returns the UTC midnight timestamp of that calendar day. */
 export function parseIsoDate(value: string, field: string): number {
   const m = ISO_DATE.exec(value);
-  if (m === null) throw new UserFacingError(`${field} must be a date in YYYY-MM-DD format (got "${truncate(value)}").`);
+  if (m === null) throw new UserFacingError(`${field} must be a date in YYYY-MM-DD format, for example 2027-02-10.`);
   const y = Number(m[1]);
   const mo = Number(m[2]);
   const d = Number(m[3]);
@@ -139,8 +139,4 @@ export function validateCalendarRange(req: CalendarRangeRequest): ValidatedRange
     throw new UserFacingError(`to ${req.to} is too far ahead. The calendar is available up to ${MAX_MONTHS_AHEAD} months out (until ${formatIsoDate(horizon)}).`);
   }
   return { from: req.from, to: req.to, days };
-}
-
-function truncate(s: string): string {
-  return s.length > 40 ? `${s.slice(0, 40)}…` : s;
 }

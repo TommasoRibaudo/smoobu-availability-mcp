@@ -19,6 +19,9 @@ export interface AppOverrides {
   readonly catalog?: readonly CatalogProperty[];
   readonly log?: Logger;
   readonly now?: () => Date;
+  /** Replaces the retry pause (tests). */
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly upstreamLimiter?: RateLimiter;
 }
 
 export interface App {
@@ -37,6 +40,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): App 
     customerId: config.smoobuCustomerId,
     ...(config.smoobuBaseUrl !== undefined ? { baseUrl: config.smoobuBaseUrl } : {}),
     ...(overrides.fetch !== undefined ? { fetch: overrides.fetch } : {}),
+    ...(overrides.sleep !== undefined ? { sleep: overrides.sleep } : {}),
+    upstreamLimiter:
+      overrides.upstreamLimiter ??
+      new TokenBucketRateLimiter({ capacity: config.upstreamRateLimitBurst, refillPerSecond: config.upstreamRateLimitPerMinute / 60 }),
     log,
   });
 

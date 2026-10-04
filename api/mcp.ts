@@ -26,7 +26,7 @@ async function handle(request: Request): Promise<Response> {
   if (h === undefined) {
     return new Response(JSON.stringify({ error: 'Server is not configured' }), {
       status: 503,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' },
     });
   }
   return h(request);

@@ -363,11 +363,27 @@ describe('SmoobuClient backoff timing', () => {
     expect(sleeps).toEqual([100, 200, 250]);
   });
 
-  it('caps a server-requested delay at maxDelayMs', async () => {
+  it('fails fast instead of waiting when Retry-After exceeds maxDelayMs, and cools down later calls', async () => {
     const { client, mock, sleeps } = harness({ retry: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 3000 } });
     mock.failNext(429, 1, { 'Retry-After': '3600' });
+    const err = await rejection(rates(client));
+    expect(err).toBeInstanceOf(SmoobuUpstreamError);
+    expect((err as SmoobuUpstreamError).status).toBe(429);
+    expect(sleeps).toEqual([]);
+    expect(mock.calls).toHaveLength(1);
+    // Smoobu's limit is account-wide: the next call is refused without a network request.
+    const second = await rejection(rates(client));
+    expect((second as SmoobuUpstreamError).status).toBe(429);
+    expect((second as SmoobuUpstreamError).attempts).toBe(0);
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it('honours a short Retry-After and does not cool down beyond it', async () => {
+    const { client, mock, sleeps } = harness({ retry: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 3000 } });
+    mock.failNext(429, 1, { 'Retry-After': '2' });
     await rates(client);
-    expect(sleeps).toEqual([3000]);
+    expect(sleeps).toEqual([2000]);
+    expect(mock.calls).toHaveLength(2);
   });
 
   it('uses the exponential backoff when Retry-After is unusable', async () => {

@@ -1,9 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [{ "source": "/mcp", "destination": "/api/mcp" }],
+  "functions": { "api/mcp.ts": { "maxDuration": 60 } },
   "headers": [
     {
-      "source": "/api/mcp",
+      "source": "/mcp",
       "headers": [{ "key": "Cache-Control", "value": "no-store" }]
     }
   ]

@@ -1,0 +1,10 @@
+# Upload only what the function needs. In particular never upload .env
+# (Vercel's built-in ignore list covers .env.local but not .env).
+/*
+!api
+!src
+!public
+!package.json
+!package-lock.json
+!tsconfig.json
+!vercel.json

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { SmoobuShapeError, SmoobuUpstreamError } from '../errors.js';
 import type { Logger } from '../log.js';
 import { silentLogger } from '../log.js';
+import type { RateLimiter } from '../rateLimit.js';
 import { assertAllowed } from './allowlist.js';
 import type { AuthContext, QueryPairs, SmoobuCredentials } from './auth.js';
 import { buildAuthHeaders, canonicalQuery, defaultAuthContext } from './auth.js';
@@ -30,6 +31,13 @@ export interface SmoobuClientOptions {
   readonly random?: () => number;
   readonly auth?: AuthContext;
   readonly log?: Logger;
+  /**
+   * Account-wide budget for outgoing Smoobu calls (all callers together), in
+   * addition to the per-IP limit at the HTTP layer. Denied => upstream error.
+   */
+  readonly upstreamLimiter?: RateLimiter;
+  /** Longest pause honoured after a 429 before calls are refused outright. */
+  readonly maxCooldownMs?: number;
 }
 
 interface RequestSpec {
@@ -95,6 +103,10 @@ export class SmoobuClient {
   private readonly random: () => number;
   private readonly auth: AuthContext;
   private readonly log: Logger;
+  private readonly upstreamLimiter: RateLimiter | undefined;
+  private readonly maxCooldownMs: number;
+  /** While now < cooldownUntil, Smoobu asked us to back off and every call fails fast. */
+  private cooldownUntil = 0;
 
   constructor(opts: SmoobuClientOptions) {
     if (!opts.credentials.apiKey) throw new Error('Smoobu API key is required');
@@ -109,6 +121,8 @@ export class SmoobuClient {
     this.random = opts.random ?? Math.random;
     this.auth = opts.auth ?? defaultAuthContext;
     this.log = opts.log ?? silentLogger;
+    this.upstreamLimiter = opts.upstreamLimiter;
+    this.maxCooldownMs = opts.maxCooldownMs ?? 60_000;
   }
 
   /** Apartment ids visible to the account. Used only by the catalog check script. */
@@ -171,11 +185,11 @@ export class SmoobuClient {
       const err = errors[String(id)];
       out.set(id, {
         available: false,
-        errorCode: err?.errorCode ?? null,
-        minimumLengthOfStay: err?.minimumLengthOfStay ?? null,
-        numberOfGuest: err?.numberOfGuest ?? null,
-        leadTime: err?.leadTime ?? null,
-        minimumLengthBetweenBookings: err?.minimumLengthBetweenBookings ?? null,
+        errorCode: saneInt(err?.errorCode, 999),
+        minimumLengthOfStay: saneInt(err?.minimumLengthOfStay, 365),
+        numberOfGuest: saneInt(err?.numberOfGuest, 100),
+        leadTime: saneInt(err?.leadTime, 365),
+        minimumLengthBetweenBookings: saneInt(err?.minimumLengthBetweenBookings, 365),
       });
     }
     return out;
@@ -199,6 +213,15 @@ export class SmoobuClient {
     const bodyText = spec.body === undefined ? '' : JSON.stringify(spec.body);
     const qs = canonicalQuery(query);
     const url = `${this.baseUrl}${spec.path}${qs.length > 0 ? `?${qs}` : ''}`;
+
+    if (this.auth.now().getTime() < this.cooldownUntil) {
+      this.log('smoobu.cooldown', { status: 429 });
+      throw new SmoobuUpstreamError(429, 0);
+    }
+    if (this.upstreamLimiter !== undefined && !(await this.upstreamLimiter.consume('smoobu')).allowed) {
+      this.log('ratelimit.upstream_denied', {});
+      throw new SmoobuUpstreamError(429, 0);
+    }
 
     let lastStatus: number | undefined;
     let attemptsMade = 0;
@@ -238,21 +261,36 @@ export class SmoobuClient {
       lastStatus = response.status;
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable) break;
+      const hinted = retryAfterMs(response.headers, this.auth.now());
+      if (response.status === 429 && hinted !== undefined) {
+        // Smoobu's limit is account-wide: pause every caller, not just this call.
+        this.cooldownUntil = Math.max(this.cooldownUntil, this.auth.now().getTime() + Math.min(hinted, this.maxCooldownMs));
+      }
+      if (hinted !== undefined && hinted > this.retry.maxDelayMs) {
+        // Smoobu asked for a longer pause than we are willing to hold a request open: fail now, retry later.
+        this.log('smoobu.failed', { status: response.status, attempts: attemptsMade, retryAfterTooLong: true });
+        throw new SmoobuUpstreamError(response.status, attemptsMade);
+      }
       this.log('smoobu.retry', { attempt, status: response.status });
-      if (attempt < this.retry.maxAttempts) await this.sleep(this.backoff(attempt, response.headers));
+      if (attempt < this.retry.maxAttempts) await this.sleep(this.backoff(attempt, hinted));
     }
 
     this.log('smoobu.failed', { status: lastStatus ?? -1, attempts: attemptsMade });
     throw new SmoobuUpstreamError(lastStatus, attemptsMade);
   }
 
-  private backoff(attempt: number, headers: Headers | undefined): number {
-    const hinted = headers === undefined ? undefined : retryAfterMs(headers, this.auth.now());
+  private backoff(attempt: number, hinted: number | undefined): number {
     const exp = this.retry.baseDelayMs * 2 ** (attempt - 1);
     const jitter = exp * 0.25 * this.random();
     const delay = hinted ?? exp + jitter;
     return Math.min(this.retry.maxDelayMs, Math.max(0, delay));
   }
+}
+
+/** Upstream numbers only reach rejection texts when they are plausible integers. */
+function saneInt(value: number | undefined, max: number): number | null {
+  if (value === undefined || !Number.isInteger(value) || value < 0 || value > max) return null;
+  return value;
 }
 
 /** Honour `Retry-After` (seconds) or Smoobu's `X-RateLimit-Retry-After` (unix seconds). */

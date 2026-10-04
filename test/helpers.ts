@@ -31,6 +31,8 @@ export const TEST_CONFIG: AppConfig = {
   bookingUrlTemplate: 'https://example.com/book?property={property}&from={arrival}&to={departure}&guests={guests}',
   rateLimitPerMinute: 60,
   rateLimitBurst: 20,
+  upstreamRateLimitPerMinute: 6000,
+  upstreamRateLimitBurst: 1000,
   cacheTtlRatesMs: 300_000,
   cacheTtlAvailabilityMs: 120_000,
 };
@@ -41,16 +43,19 @@ export interface TestApp {
 }
 
 export function createTestApp(overrides: AppOverrides = {}, config: Partial<AppConfig> = {}): TestApp {
-  const mock = createMockSmoobu({ apartments: MOCK_APARTMENTS });
+  const merged = { ...TEST_CONFIG, ...config };
+  const mock = createMockSmoobu({ apartments: MOCK_APARTMENTS, apiKey: merged.smoobuApiKey, ...(merged.smoobuApiSecret !== undefined ? { apiSecret: merged.smoobuApiSecret } : {}) });
   const app = createApp(
-    { ...TEST_CONFIG, ...config },
+    merged,
     {
       fetch: mock.fetch,
       catalog: TEST_CATALOG,
       log: silentLogger,
       now: () => FIXED_NOW,
       rateLimiter: new AllowAllRateLimiter(),
+      upstreamLimiter: new AllowAllRateLimiter(),
       cache: new NoopCache(),
+      sleep: () => Promise.resolve(),
       ...overrides,
     },
   );

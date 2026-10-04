@@ -1,3 +1,4 @@
+import { buildCanonicalString, signCanonicalString } from '../src/smoobu/auth.js';
 import { POISON } from './fixtures/poison.js';
 
 export interface RecordedCall {
@@ -23,7 +24,9 @@ export interface MockApartment {
 
 export interface MockSmoobuOptions {
   readonly apartments: readonly MockApartment[];
-  readonly baseUrl?: string;
+  /** When set, HMAC-signed requests must verify against this secret and this key. */
+  readonly apiKey?: string;
+  readonly apiSecret?: string;
 }
 
 export interface MockSmoobu {
@@ -33,6 +36,8 @@ export interface MockSmoobu {
   failNext(status: number, times: number, headers?: Record<string, string>): void;
   /** Make the next response a 200 with garbage JSON shape. */
   garbageNext(): void;
+  /** Make the next availability response carry poison in fields the code DOES read (currency, numeric rule fields). */
+  corruptNext(): void;
 }
 
 export const MOCK_BASE_URL = 'https://smoobu.mock.invalid';
@@ -80,6 +85,7 @@ export function createMockSmoobu(opts: MockSmoobuOptions): MockSmoobu {
   const calls: RecordedCall[] = [];
   const failures: { status: number; headers: Record<string, string> }[] = [];
   let garbage = false;
+  let corrupt = false;
   const byId = new Map(opts.apartments.map((a) => [a.id, a]));
 
   const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
@@ -96,6 +102,21 @@ export function createMockSmoobu(opts: MockSmoobuOptions): MockSmoobu {
 
     const hasAuth = headers.has('api-key') || (headers.has('x-api-key') && headers.has('x-signature') && headers.has('x-timestamp') && headers.has('x-nonce'));
     if (!hasAuth) return json(401, { title: 'Error occurred', detail: 'verification error', ...guestBlob() });
+    if (headers.has('x-signature') && opts.apiSecret !== undefined) {
+      const query = [...url.searchParams.entries()].map(([k, v]) => [k, v] as const);
+      const canonical = buildCanonicalString({
+        method,
+        path: url.pathname,
+        query,
+        body: rawBody ?? '',
+        timestamp: headers.get('x-timestamp') ?? '',
+        nonce: headers.get('x-nonce') ?? '',
+        apiKey: headers.get('x-api-key') ?? '',
+      });
+      const expected = signCanonicalString(canonical, opts.apiSecret);
+      const keyOk = opts.apiKey === undefined || headers.get('x-api-key') === opts.apiKey;
+      if (!keyOk || headers.get('x-signature') !== expected) return json(401, { title: 'Error occurred', detail: 'bad signature', ...guestBlob() });
+    }
 
     const failure = failures.shift();
     if (failure !== undefined) return json(failure.status, { title: 'Error occurred', detail: 'upstream failure', ...guestBlob() }, failure.headers);
@@ -167,7 +188,13 @@ export function createMockSmoobu(opts: MockSmoobuOptions): MockSmoobu {
         }
         const total = stayNights.reduce((sum, d) => sum + priceFor(apt, d), 0);
         availableApartments.push(id);
-        prices[String(id)] = { price: total, currency: apt.currency, ...guestBlob() };
+        prices[String(id)] = { price: total, currency: corrupt ? POISON.guestFullName : apt.currency, ...guestBlob() };
+      }
+      if (corrupt) {
+        corrupt = false;
+        for (const key of Object.keys(errorMessages)) {
+          errorMessages[key] = { ...(errorMessages[key] as object), errorCode: 401, minimumLengthOfStay: POISON.reservationId, numberOfGuest: POISON.customerId };
+        }
       }
       return json(200, { availableApartments, prices, errorMessages, ...guestBlob() });
     }
@@ -184,6 +211,9 @@ export function createMockSmoobu(opts: MockSmoobuOptions): MockSmoobu {
     },
     garbageNext: () => {
       garbage = true;
+    },
+    corruptNext: () => {
+      corrupt = true;
     },
   };
 }

@@ -99,12 +99,18 @@ export async function runCheckAvailability(deps: ToolDeps, args: CheckAvailabili
     if (!outcome.available) {
       return { slug: p.slug, name: p.name, available: false, reason: describeRejection(outcome, { arrival: stay.arrival, nights: stay.nights, maxGuests: p.maxGuests }) };
     }
+    if (outcome.currency.trim().toUpperCase() !== p.currency) {
+      // The catalog says what currency a property is priced in; a mismatch is an
+      // operator configuration problem, not something to pass through.
+      deps.log('smoobu.currency_mismatch', {});
+      return { slug: p.slug, name: p.name, available: false, reason: 'Pricing is temporarily unavailable for this property.' };
+    }
     const total = roundMoney(outcome.price);
     return {
       slug: p.slug,
       name: p.name,
       available: true,
-      currency: outcome.currency,
+      currency: p.currency,
       total,
       nightlyAverage: roundMoney(total / stay.nights),
       nights: stay.nights,

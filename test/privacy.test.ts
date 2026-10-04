@@ -32,7 +32,7 @@ const ALLOWED_KEYS: Record<ToolName, readonly string[]> = {
 };
 
 const EMAIL = /[\w.+-]+@[\w-]+\.[\w.-]+/;
-const PHONE = /\+\d{1,3}[\s-]?\d{3,4}[\s-]?\d{4}/;
+const PHONE = /(?:\+\d{1,3}[\s-]?)?\(?\d{3}\)?[\s-]?\d{4}[\s-]\d{4}|\d{4}[\s-]\d{4}/;
 const LONG_DIGIT_RUN = /\d{7,}/; // reservation ids, phone digits; prices and dates are shorter
 const SMOOBU_IDS = [...TEST_CATALOG.map((p) => String(p.smoobuApartmentId)), ...MOCK_APARTMENTS.map((a) => String(a.id))];
 
@@ -183,6 +183,21 @@ describe('privacy: no Smoobu data ever leaves the server', () => {
     const garbage = (await client.callTool({ name: 'check_availability', arguments: { arrival: '2026-11-02', departure: '2026-11-06', guests: 2 } })) as CallToolResult;
     expect(garbage.isError).toBe(true);
     assertClean('check_availability', garbage, 'garbage shape');
+  });
+
+  it('poison in fields the code does read (currency, rule numbers) never reaches the output', async () => {
+    testApp.mock.corruptNext();
+    const result = (await client.callTool({ name: 'check_availability', arguments: { arrival: '2026-11-02', departure: '2026-11-04', guests: 2 } })) as CallToolResult;
+    expect(result.isError).toBeFalsy();
+    assertClean('check_availability', result, 'corrupt currency and numbers');
+    const out = result.structuredContent as { results: { slug: string; available: boolean; reason?: string }[] };
+    expect(out.results.find((r) => r.slug === 'jungle-studio')).toEqual({
+      slug: 'jungle-studio',
+      name: 'Jungle Studio',
+      available: false,
+      reason: 'Pricing is temporarily unavailable for this property.',
+    });
+    expect(out.results.find((r) => r.slug === 'casa-caribe')?.reason).toBe('The stay is shorter than the minimum required for these dates (2 nights requested).');
   });
 
   it('calendar days are available true/false only, with no reason for unavailable days', async () => {

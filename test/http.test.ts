@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { clientIpFrom } from '../src/http.js';
+import { clientIpFrom, rateLimitKey } from '../src/http.js';
 import { TokenBucketRateLimiter } from '../src/rateLimit.js';
 import { createTestApp } from './helpers.js';
 
 const URL_ = 'http://localhost/mcp';
+const HEADERS = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
 
 function rpc(method: string, params: Record<string, unknown> = {}, id = 1): RequestInit {
   return {
@@ -79,6 +80,43 @@ describe('HTTP handler', () => {
   it('does not rate limit the plain GET description', async () => {
     const { app } = createTestApp({ rateLimiter: new TokenBucketRateLimiter({ capacity: 1, refillPerSecond: 0.001 }) });
     for (let i = 0; i < 5; i++) expect((await app.handler(new Request(URL_))).status).toBe(200);
+  });
+
+  it('rejects JSON-RPC batches so one rate-limit token cannot buy many tool calls', async () => {
+    const { app, mock } = createTestApp({ rateLimiter: new TokenBucketRateLimiter({ capacity: 1, refillPerSecond: 0.0001 }) });
+    const batch = Array.from({ length: 100 }, (_, i) => ({
+      jsonrpc: '2.0',
+      id: i,
+      method: 'tools/call',
+      params: { name: 'check_availability', arguments: { arrival: `2026-11-${String(1 + (i % 28)).padStart(2, '0')}`, departure: '2026-12-15', guests: 1 } },
+    }));
+    const res = await app.handler(new Request(URL_, { method: 'POST', headers: HEADERS, body: JSON.stringify(batch) }), { clientIp: '203.0.113.9' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/batch/i);
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it('answers PUT and PATCH with 405', async () => {
+    const { app } = createTestApp();
+    for (const method of ['PUT', 'PATCH']) {
+      const res = await app.handler(new Request(URL_, { method, headers: HEADERS, body: '{}' }));
+      expect(res.status).toBe(405);
+    }
+  });
+
+  it('keys IPv6 clients by their /64 so rotating addresses share one bucket', async () => {
+    expect(rateLimitKey('2001:db8:abcd:12:aaaa:bbbb:cccc:dddd')).toBe('2001:0db8:abcd:0012::/64');
+    expect(rateLimitKey('2001:db8:abcd:12::1')).toBe('2001:0db8:abcd:0012::/64');
+    expect(rateLimitKey('2001:db8::1')).toBe('2001:0db8:0000:0000::/64');
+    expect(rateLimitKey('::1')).toBe('0000:0000:0000:0000::/64');
+    expect(rateLimitKey('::ffff:192.0.2.1')).toBe('192.0.2.1');
+    expect(rateLimitKey('192.0.2.1')).toBe('192.0.2.1');
+
+    const { app } = createTestApp({ rateLimiter: new TokenBucketRateLimiter({ capacity: 1, refillPerSecond: 0.0001 }) });
+    expect((await app.handler(new Request(URL_, rpc('tools/list')), { clientIp: '2001:db8:abcd:12::1' })).status).toBe(200);
+    expect((await app.handler(new Request(URL_, rpc('tools/list')), { clientIp: '2001:db8:abcd:12::2' })).status).toBe(429);
+    expect((await app.handler(new Request(URL_, rpc('tools/list')), { clientIp: '2001:db8:abcd:13::1' })).status).toBe(200);
   });
 
   it('rejects oversized bodies with 413', async () => {
