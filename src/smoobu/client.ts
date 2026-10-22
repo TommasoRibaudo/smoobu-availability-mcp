@@ -64,12 +64,27 @@ const ratesSchema = z.looseObject({
   data: z.record(z.string(), z.record(z.string(), rateDaySchema)),
 });
 
+/** Smoobu (PHP) encodes an empty map as `[]`; read that as an empty record. */
+function emptyArrayAsRecord<T extends z.ZodType>(schema: T) {
+  return z.preprocess((v) => (Array.isArray(v) && v.length === 0 ? {} : v), schema);
+}
+
 const availabilitySchema = z.looseObject({
   // Always present in Smoobu's response; its absence means we are not looking at the expected payload.
   availableApartments: z.array(z.union([z.number(), z.string()])),
-  prices: z.record(z.string(), z.looseObject({ price: z.number(), currency: z.string() })).optional(),
-  errorMessages: z
-    .record(
+  prices: emptyArrayAsRecord(
+    z.record(
+      z.string(),
+      z.looseObject({
+        price: z.number(),
+        // A display symbol such as "$", not an ISO code; priceElements carry the ISO code.
+        currency: z.string(),
+        priceElements: z.array(z.looseObject({ currencyCode: z.string().optional() })).optional(),
+      }),
+    ),
+  ).optional(),
+  errorMessages: emptyArrayAsRecord(
+    z.record(
       z.string(),
       z.looseObject({
         errorCode: z.number().int().optional(),
@@ -78,9 +93,15 @@ const availabilitySchema = z.looseObject({
         leadTime: z.number().optional(),
         minimumLengthBetweenBookings: z.number().optional(),
       }),
-    )
-    .optional(),
+    ),
+  ).optional(),
 });
+
+/** Prefer the ISO 4217 code from priceElements over Smoobu's display symbol. */
+function isoCurrency(price: { currency: string; priceElements?: readonly { currencyCode?: string | undefined }[] | undefined }): string {
+  const code = price.priceElements?.find((e) => e.currencyCode !== undefined && /^[A-Za-z]{3}$/.test(e.currencyCode))?.currencyCode;
+  return code ?? price.currency;
+}
 
 /**
  * Read-only Smoobu client limited to three allowlisted endpoints.
@@ -179,7 +200,7 @@ export class SmoobuClient {
     for (const id of input.apartmentIds) {
       const price = prices[String(id)];
       if (available.has(id) && price !== undefined) {
-        out.set(id, { available: true, price: price.price, currency: price.currency });
+        out.set(id, { available: true, price: price.price, currency: isoCurrency(price) });
         continue;
       }
       const err = errors[String(id)];
